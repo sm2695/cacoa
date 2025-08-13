@@ -249,12 +249,12 @@ buildModelMatrix <- function(
 
 #' @keywords internal
 getSampleGroups <- function(sample.meta, contrast, sample.id) {
-  if (!is.null(contrast)) {
-    sample.groups <- setNames(as.character(sample.meta[[contrast[1]]]), sample.meta[,sample.id])
-    sample.groups <- sample.groups[sample.groups %in% c(contrast[2], contrast[3])]
-    sample.groups <- factor(sample.groups, levels = c(contrast[2], contrast[3]))
-  }
-  return(sample.groups)
+    if (!is.null(contrast)) {
+        sample.groups <- setNames(as.character(sample.meta[[contrast[1]]]), sample.meta[,grep(sample.id, colnames(sample.meta))])
+        sample.groups <- sample.groups[sample.groups %in% c(contrast[2], contrast[3])]
+        sample.groups <- factor(sample.groups, levels = c(contrast[2], contrast[3]))
+    }
+    return(sample.groups)
 }
 
 # Build a p×K contrast matrix from:
