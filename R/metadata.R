@@ -125,7 +125,7 @@ validateDesignFormula <- function(formula, contrast = NULL, override = FALSE, ve
 }
 
 #' @keywords internal
-constructModelMatrix <- function(
+buildModelMatrix <- function(
   sample_meta, formula,
   contrast = NULL,
   override = FALSE,
@@ -255,4 +255,152 @@ getSampleGroups <- function(sample.meta, contrast, sample.id) {
     sample.groups <- factor(sample.groups, levels = c(contrast[2], contrast[3]))
   }
   return(sample.groups)
+}
+
+# Build a p×K contrast matrix from:
+#   - X: model matrix used for fitting (preferably with intercept kept)
+#   - formula: the model formula used to build X
+#   - contrasts: list of c(var, ref, alt) triplets, e.g. list(c("diagnosis","Control","ASD"))
+#   - expand:
+#       "marginal" -> only main contrasts for each requested var
+#       "simple"   -> main + simple effects at each non-baseline level of partner factors found in interactions
+#       "both"     -> "simple" plus, when a partner is 2-level, include the difference-of-simple-effects (the pure interaction)
+#
+# Notes:
+# - Works with treatment coding (the default from model.matrix). If you dropped the intercept, it still works.
+# - Supports factor×factor and continuous×factor interactions. For >2-level partners, it generates simple effects per level.
+buildContrastMatrix <- function(X, formula, contrasts, expand = c("marginal","simple","both")) {
+  stopifnot(is.matrix(X))
+  expand <- match.arg(expand)
+  p  <- ncol(X); cn <- colnames(X)
+
+  # ---- helpers -------------------------------------------------------
+  # Main-effect dummy columns for a factor var (exclude interactions)
+  main_level_to_col <- function(var) {
+    idx <- grep(paste0("^", var), cn)
+    idx <- idx[!grepl(":", cn[idx], fixed = TRUE)]
+    lev <- sub(paste0("^", var), "", cn[idx])
+    keep <- nzchar(lev)
+    setNames(idx[keep], lev[keep])
+  }
+  # Check if a variable is continuous in X (has a single main column named exactly var)
+  cont_col <- function(var) {
+    j <- which(cn == var)
+    if (length(j) == 1L) j else integer(0)
+  }
+  # Build the regex for an interaction column (order-agnostic)
+  tok  <- function(var, lev) if (missing(lev) || is.null(lev)) var else paste0(var, lev)
+  find_inter_col <- function(t1, t2) {
+    which(cn == paste0(t1, ":", t2) | cn == paste0(t2, ":", t1))
+  }
+  add <- function(v, j, w) { if (length(j)==1 && j>0) v[j] <- v[j] + w; v }
+
+  # Parse formula to discover interactions containing each requested var
+  tr <- terms(formula)
+  term_labels <- attr(tr, "term.labels")
+  inter_pairs <- strsplit(term_labels[grepl(":", term_labels, fixed = TRUE)], ":", fixed = TRUE)
+
+  partners_for <- function(var) {
+    if (length(inter_pairs) == 0) return(character())
+    unique(unlist(lapply(inter_pairs, function(ab) {
+      if (var %in% ab) setdiff(ab, var) else character()
+    })))
+  }
+
+  # Normalize contrasts input into list of lists
+  specs <- lapply(contrasts, function(x) {
+    stopifnot(is.character(x), length(x) == 3)
+    list(var = x[1], ref = x[2], alt = x[3])
+  })
+
+  C <- NULL; cnames <- character()
+
+  for (sp in specs) {
+    A <- sp$var; ref <- sp$ref; alt <- sp$alt
+    v_main <- numeric(p); names(v_main) <- cn
+
+    # ----- main contrast for A (alt vs ref) -----
+    mapA <- main_level_to_col(A)
+    jA_ref <- unname(mapA[ref]); if (length(jA_ref)==0) jA_ref <- NA_integer_
+    jA_alt <- unname(mapA[alt]); if (length(jA_alt)==0) jA_alt <- NA_integer_
+    jA_cont <- cont_col(A)
+
+    if (length(jA_cont) == 1L) {
+      # A is continuous -> "main contrast" is just slope of A
+      v_main <- add(v_main, jA_cont, +1)
+      main_name <- paste0("Slope(", A, ")")
+    } else {
+      # A is factor
+      if (!is.na(jA_alt) && !is.na(jA_ref)) {
+        v_main <- add(v_main, jA_alt, +1); v_main <- add(v_main, jA_ref, -1)
+      } else if (!is.na(jA_alt) && is.na(jA_ref)) {
+        v_main <- add(v_main, jA_alt, +1)          # ref is baseline (intercept coding)
+      } else if (is.na(jA_alt) && !is.na(jA_ref)) {
+        v_main <- add(v_main, jA_ref, -1)          # alt is baseline
+      } else {
+        stop("For '", A, "': neither '", ref, "' nor '", alt, "' has a main column in X.")
+      }
+      main_name <- paste0(A, alt, "_vs_", ref)
+    }
+
+    # always include the marginal main contrast
+    C <- cbind(C, v_main); cnames <- c(cnames, main_name)
+
+    # ---------- expansions through interactions ----------
+    if (expand != "marginal") {
+      partners <- partners_for(A)
+      for (B in partners) {
+        # continuous partner?
+        jB_cont <- cont_col(B)
+        if (length(jB_cont) == 1L) {
+          # A × continuous partner is uncommon for "simple effect"; skip by default
+          next
+        }
+
+        # factor partner: simple effects at each non-baseline level of B
+        mapB <- main_level_to_col(B)
+        if (length(mapB) == 0) next  # B not factor-coded in X
+
+        # Determine B's non-baseline levels present as columns
+        levB <- names(mapB)  # these are the dummy-coded levels (exclude baseline)
+        for (b in levB) {
+          v_simple <- v_main  # start from main effect of A
+          # add interaction column for A_alt : B_b (or slope(A) : B_b if A is continuous)
+          if (length(jA_cont) == 1L) {
+            jInt <- find_inter_col(tok(A), tok(B, b))
+            if (length(jInt) == 1L) v_simple <- add(v_simple, jInt, +1)
+            simple_name <- paste0(main_name, " | ", B, "=", sub(paste0("^", B), "", b))
+          } else {
+            jInt <- find_inter_col(tok(A, alt), tok(B, b))
+            if (length(jInt) == 1L) v_simple <- add(v_simple, jInt, +1)
+            simple_name <- paste0("Simple(", A, " ", alt, "_vs_", ref, " | ",
+                                  B, "=", sub(paste0("^", B), "", b), ")")
+          }
+          C <- cbind(C, v_simple); cnames <- c(cnames, simple_name)
+        }
+
+        # Differences of simple effects (pure interaction) when B has exactly 1 dummy (i.e., 2 levels)
+        if (expand == "both" && length(levB) == 1L) {
+          b <- levB[1]
+          v_diff <- numeric(p); names(v_diff) <- cn
+          if (length(jA_cont) == 1L) {
+            # slope(A|B=b) - slope(A|B=baseline) = beta_{A:B_b}
+            jInt <- find_inter_col(tok(A), tok(B, b))
+            if (length(jInt) == 1L) v_diff <- add(v_diff, jInt, +1)
+            diff_name <- paste0("DiffSlope(", A, " | ", B, "=", sub(paste0("^", B), "", b), " vs baseline)")
+          } else {
+            # [A_alt vs ref at B=b] - [A_alt vs ref at baseline] = beta_{A_alt:B_b}
+            jInt <- find_inter_col(tok(A, alt), tok(B, b))
+            if (length(jInt) == 1L) v_diff <- add(v_diff, jInt, +1)
+            diff_name <- paste0("Interaction(", A, " ", alt, " × ", B, "=", sub(paste0("^", B), "", b), ")")
+          }
+          if (any(v_diff != 0)) { C <- cbind(C, v_diff); cnames <- c(cnames, diff_name) }
+        }
+      }
+    }
+  }
+
+  if (is.null(C)) C <- matrix(numeric(0), nrow = p, ncol = 0, dimnames = list(colnames(X), character()))
+  rownames(C) <- colnames(X); colnames(C) <- cnames
+  C
 }
