@@ -229,22 +229,30 @@ buildModelMatrix <- function(
       levels = c(ref.level, setdiff(unique_levels, ref.level))
     )
   }
-  model_mat <- model.matrix(formula, data = sample_meta)
-  if (!keep.intercept) {
-    if ("(Intercept)" %in% colnames(model_mat)) {
-      model_mat <- model_mat[, -1, drop = FALSE]
-    }
+  mm <- model.matrix(formula, data = sample_meta)         # may include intercept
+  assign_vec  <- attr(mm, "assign")
+  contrasts_a <- attr(mm, "contrasts")
+
+  if (!keep.intercept && "(Intercept)" %in% colnames(mm)) {
+    keep <- colnames(mm) != "(Intercept)"
+    mm   <- mm[, keep, drop = FALSE]
+    if (!is.null(assign_vec))  attr(mm, "assign")    <- assign_vec[keep]   
+    if (!is.null(contrasts_a)) attr(mm, "contrasts") <- contrasts_a        
+  } else {
+    if (!is.null(assign_vec))  attr(mm, "assign")    <- assign_vec
+    if (!is.null(contrasts_a)) attr(mm, "contrasts") <- contrasts_a
   }
+  
   # check rank
-  qr_decomp <- qr(model_mat)
-  if (qr_decomp$rank < ncol(model_mat)) {
+  qr_decomp <- qr(mm)
+  if (qr_decomp$rank < ncol(mm)) {
     warning(sprintf(
       "Model matrix has linear dependencies: rank %d < number of columns %d. Possible confounding or redundant covariates.",
-      qr_decomp$rank, ncol(model_mat)
+      qr_decomp$rank, ncol(mm)
     ))
   }
-  dimnames(model_mat) <- list(rownames(model_mat), colnames(model_mat))
-  return(model_mat)
+  dimnames(mm) <- list(rownames(mm), colnames(mm))
+  return(mm)
 }
 
 #' @keywords internal
