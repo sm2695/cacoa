@@ -50,13 +50,17 @@ estimateUMAPOnDistances <- function(p.dists, n.neighbors=15, verbose=FALSE, ...)
 }
 
 #' @keywords internal
-validateDesignFormula <- function(formula, contrast = NULL, override = FALSE, verbose = FALSE) {
-  if (is.null(formula)) {
-    stop("Design formula must be provided.")
-  }
+validateDesign <- function(
+  formula,
+  sample.meta = NULL,
+  contrast = NULL,
+  verbose = FALSE
+) {
+  if (is.null(formula)) stop("Design formula must be provided.")
+
+  # Accept formula or character; ensure "~" present
   if (inherits(formula, "formula")) {
-    formula_str <- deparse(formula)
-    formula_str <- paste(formula_str, collapse = "")
+    formula_str <- paste(deparse(formula), collapse = "")
   } else if (is.character(formula)) {
     formula_str <- formula
   } else {
@@ -66,6 +70,7 @@ validateDesignFormula <- function(formula, contrast = NULL, override = FALSE, ve
     stop("Design formula must contain a '~' to separate response and predictors.")
   }
 
+  # Demote random effects (lme4-style) to fixed, preserving variables
   containsRandomEffects <- grepl("\\([^\\|]*\\|[^\\)]*\\)", formula_str)
   if (containsRandomEffects) {
     rand_eff_vars <- unlist(regmatches(formula_str, gregexpr("(?<=\\|)[^\\)]+", formula_str, perl = TRUE)))
@@ -79,171 +84,142 @@ validateDesignFormula <- function(formula, contrast = NULL, override = FALSE, ve
     rhs <- gsub("\\++", "+", rhs)
     rhs <- gsub("^\\s*\\+|\\+\\s*$", "", rhs)
     rhs <- trimws(rhs)
-    rhs_terms <- unlist(strsplit(rhs, "\\+"))
-    rhs_terms <- trimws(rhs_terms)
+    rhs_terms <- trimws(unlist(strsplit(rhs, "\\+")))
     rhs_terms <- unique(c(rhs_terms, rand_eff_vars))
     rhs_terms <- rhs_terms[rhs_terms != ""]
     formula_str <- paste("~", paste(rhs_terms, collapse = " + "))
   }
-  if (verbose) {
-    if (exists("containsRandomEffects") && containsRandomEffects) {
-      message("Random effect terms provided in the model will be treated as fixed effect terms.")
-    }
-    message(sprintf("Final design formula: %s", formula_str))
-  }
 
-  parsedTerms <- terms(as.formula(formula_str))
-  termLabels <- attr(parsedTerms, "term.labels")
+  parsedTerms <- terms(stats::as.formula(formula_str))
+  termLabels  <- attr(parsedTerms, "term.labels")
 
+  # auto-derive a contrast if none specified (uses first term; last vs first level)
   if (is.null(contrast)) {
-    # Extract first term from formula
-    if (length(termLabels) == 0) {
-      stop("No terms found in the design formula to use as contrast.")
-    }
+    if (length(termLabels) == 0) stop("No terms found in the design formula to use as contrast.")
+    if (is.null(sample.meta)) stop("sample.meta must be given to infer a default contrast.")
     contrast_var <- termLabels[1]
-    if (!contrast_var %in% names(self$sample_meta)) {
+    if (!contrast_var %in% colnames(sample.meta)) {
       stop(sprintf("Contrast variable '%s' not found in sample metadata.", contrast_var))
     }
-    levels_contrast <- levels(factor(self$sample_meta[[contrast_var]]))
+    levels_contrast <- levels(factor(sample.meta[[contrast_var]]))
     if (length(levels_contrast) < 2) {
       stop(sprintf("Contrast variable '%s' must have at least two levels.", contrast_var))
     }
-    # Compare last level vs first level
-    contrast <- c(contrast_var, levels_contrast[1], levels_contrast[length(levels_contrast)])   
+    contrast <- c(contrast_var, levels_contrast[1], levels_contrast[length(levels_contrast)])
   }
-
-  if (is.null(contrast) || length(contrast) != 3) {
+  if (length(contrast) != 3) {
     stop("Contrast must be a vector of length 3: c('variable', 'level1', 'level2').")
   }
 
-  if (override) {
-    self$formula <- parsedTerms
-    self$contrast <- contrast
+  if (verbose) {
+    if (containsRandomEffects) message("Random effect terms provided will be treated as fixed effect terms.")
+    message(sprintf("Final design formula: %s", formula_str))
   }
 
-  return(parsedTerms)
+  list("formula" = parsedTerms, "contrast" = contrast)
 }
 
 #' @keywords internal
 buildModelMatrix <- function(
-  sample_meta, formula,
+  sample.meta, formula,
   contrast = NULL,
-  override = FALSE,
   keep.intercept = FALSE,
   verbose = FALSE
 ) {
-  if (override && !is.null(formula) && !is.null(contrast)) {
-    formula <- validateDesignFormula(formula = formula, contrast = contrast, override = override, verbose = verbose)
+
+  if (!is.null(formula) || !is.null(contrast)) {
+    vd <- validateDesign(formula = formula, sample_meta = sample.meta, contrast = contrast, verbose = verbose)
+    formula <- vd$formula
+    contrast <- vd$contrast
   }
+
   predictorVars <- all.vars(formula)
-  sample_meta <- sample_meta[, predictorVars, drop = FALSE]
+  sample.meta   <- sample.meta[, predictorVars, drop = FALSE]
 
-  valid_vars <- sapply(predictorVars, function(cov) {
-        x <- sample_meta[[cov]]
-        if (is.factor(x) || is.character(x)) {
-            length(unique(x)) > 1
-        } else {
-            var_x <- var(x, na.rm = TRUE)
-            !is.na(var_x) && var_x > 0
-        }
-    })
-    
-    if (!all(valid_vars)) {
-        removed_vars <- predictorVars[!valid_vars]
-        warning(sprintf(
-            "Removing covariates with only one factor level or zero variance: %s",
-            paste(removed_vars, collapse = ", ")
-        ))
-        predictorVars <- predictorVars[valid_vars]
-        sample_meta <- sample_meta[, predictorVars, drop = FALSE]
-        intercept_present <- attr(terms(formula), "intercept") == 1
-        formula <- reformulate(predictorVars, intercept = intercept_present)
+  # Remove zero-variance / single-level covariates
+  valid_vars <- vapply(predictorVars, function(cov) {
+    x <- sample.meta[[cov]]
+    if (is.factor(x) || is.character(x)) {
+      length(unique(x)) > 1
+    } else {
+      vx <- stats::var(x, na.rm = TRUE)
+      !is.na(vx) && vx > 0
     }
+  }, logical(1))
 
-  #sample_meta <- filterDEMetadata(sample_meta)
-  #if (is.null(sample_meta)) {
-  #  stop("Redundant covariate columns detected.")
-  #}
-  predictorVars <- colnames(sample_meta)
-  n_samples <- nrow(sample_meta)
-  n_covs <- length(predictorVars)
-  if (n_samples < n_covs + 1) {
-    stop(sprintf("Too few samples (%d) relative to number of covariates (%d).", n_samples, n_covs))
+  if (!all(valid_vars)) {
+    removed_vars <- predictorVars[!valid_vars]
+    warning(sprintf("Removing covariates with only one factor level or zero variance: %s", paste(removed_vars, collapse = ", ")))
+    predictorVars   <- predictorVars[valid_vars]
+    sample.meta     <- sample.meta[, predictorVars, drop = FALSE]
+    intercept_flag  <- attr(terms(formula), "intercept") == 1
+    formula         <- reformulate(predictorVars, intercept = intercept_flag)
   }
+
+  # Flag identical columns, warn if correlated
   if (length(predictorVars) > 1) {
-        to_remove <- c()
-        for (i in seq_along(predictorVars)) {
-            for (j in seq_along(predictorVars)) {
-                if (i < j) {
-                    col1 <- sample_meta[[predictorVars[i]]]
-                    col2 <- sample_meta[[predictorVars[j]]]
-                    if (is.factor(col1)) col1 <- as.character(col1)
-                    if (is.factor(col2)) col2 <- as.character(col2)
-                    if (all(col1 == col2, na.rm = TRUE)) {
-                        warning(sprintf("Covariates '%s' and '%s' are identical. Removing '%s'.", predictorVars[i], predictorVars[j], predictorVars[j]))
-                        to_remove <- c(to_remove, predictorVars[j])
-                    } else if (is.numeric(col1) && is.numeric(col2)) {
-                        cor_val <- suppressWarnings(cor(col1, col2, use = "pairwise.complete.obs"))
-                        if (!is.na(cor_val) && abs(cor_val) > 0.95) {
-                            warning(sprintf(
-                                "Covariates '%s' and '%s' are highly correlated (cor = %.2f).",
-                                predictorVars[i], predictorVars[j], cor_val
-                            ))
-                        }
-                    }
-                }
-            }
+    to_remove <- character(0)
+    for (i in seq_along(predictorVars)) for (j in seq_along(predictorVars)) if (i < j) {
+      col1 <- sample.meta[[predictorVars[i]]]
+      col2 <- sample.meta[[predictorVars[j]]]
+      if (is.factor(col1)) col1 <- as.character(col1)
+      if (is.factor(col2)) col2 <- as.character(col2)
+      if (all(col1 == col2, na.rm = TRUE)) {
+        warning(sprintf("Covariates '%s' and '%s' are identical. Removing '%s'.", predictorVars[i], predictorVars[j], predictorVars[j]))
+        to_remove <- c(to_remove, predictorVars[j])
+      } else if (is.numeric(col1) && is.numeric(col2)) {
+        cor_val <- suppressWarnings(stats::cor(col1, col2, use = "pairwise.complete.obs"))
+        if (!is.na(cor_val) && abs(cor_val) > 0.95) {
+          warning(sprintf("Covariates '%s' and '%s' are highly correlated (cor = %.2f).", predictorVars[i], predictorVars[j], cor_val))
         }
-        if (length(to_remove) > 0) {
-            to_remove <- unique(to_remove)
-            sample_meta <- sample_meta[, !(colnames(sample_meta) %in% to_remove), drop = FALSE]
-            predictorVars <- colnames(sample_meta)
-            intercept_present <- attr(terms(formula), "intercept") == 1
-            formula <- reformulate(predictorVars, intercept = intercept_present)
-        }
+      }
     }
+    if (length(to_remove)) {
+      to_remove      <- unique(to_remove)
+      sample.meta    <- sample.meta[, !(colnames(sample.meta) %in% to_remove), drop = FALSE]
+      predictorVars  <- colnames(sample.meta)
+      intercept_flag <- attr(terms(formula), "intercept") == 1
+      formula        <- reformulate(predictorVars, intercept = intercept_flag)
+    }
+  }
+
+  # Coerce non-numeric/non-factor to factor
   for (cov in predictorVars) {
-    if (!is.numeric(sample_meta[[cov]]) && !is.factor(sample_meta[[cov]])) {
-      if (isTRUE(verbose)) message(sprintf("Converting covariate '%s' to factor.", cov))
-      unique_vals <- sort(unique(na.omit(sample_meta[[cov]])))
-      sample_meta[[cov]] <- factor(sample_meta[[cov]], levels = unique_vals)
+    if (!is.numeric(sample.meta[[cov]]) && !is.factor(sample.meta[[cov]])) {
+      if (verbose) message(sprintf("Converting covariate '%s' to factor.", cov))
+      lvls <- sort(unique(stats::na.omit(sample.meta[[cov]])))
+      sample.meta[[cov]] <- factor(sample.meta[[cov]], levels = lvls)
     }
   }
-  
+
+  # Apply requested contrast’s reference/target level on its factor (if present)
   if (!is.null(contrast)) {
-    contrast_var <- contrast[1]
-    ref.level <- contrast[2]
-    target.level <- contrast[3]
-  } else {
-    contrast_var <- self$contrast[1]
-    ref.level <- self$contrast[2]
-    target.level <- self$contrast[3]
-  }
-  if (!is.null(contrast_var) && contrast_var %in% names(sample_meta)) {
-    unique_levels <- unique(sample_meta[[contrast_var]])
-    if (!ref.level %in% unique_levels || !target.level %in% unique_levels) {
-      stop("ref.level or target.level not found in levels of ", contrast_var)
+    contrast_var <- contrast[1]; ref.level <- contrast[2]; target.level <- contrast[3]
+    if (contrast_var %in% colnames(sample.meta)) {
+      unique_levels <- unique(sample.meta[[contrast_var]])
+      if (!ref.level %in% unique_levels || !target.level %in% unique_levels) {
+        stop("ref.level or target.level not found in levels of ", contrast_var)
+      }
+      sample.meta[[contrast_var]] <- factor(sample.meta[[contrast_var]], levels = c(ref.level, setdiff(unique_levels, ref.level)))
     }
-    sample_meta[[contrast_var]] <- factor(
-      sample_meta[[contrast_var]],
-      levels = c(ref.level, setdiff(unique_levels, ref.level))
-    )
   }
-  mm <- model.matrix(formula, data = sample_meta)         # may include intercept
+
+  # Build the model matrix (keep intercept then optionally drop)
+  mm <- stats::model.matrix(formula, data = sample.meta)
   assign_vec  <- attr(mm, "assign")
   contrasts_a <- attr(mm, "contrasts")
 
   if (!keep.intercept && "(Intercept)" %in% colnames(mm)) {
     keep <- colnames(mm) != "(Intercept)"
     mm   <- mm[, keep, drop = FALSE]
-    if (!is.null(assign_vec))  attr(mm, "assign")    <- assign_vec[keep]   
-    if (!is.null(contrasts_a)) attr(mm, "contrasts") <- contrasts_a        
+    if (!is.null(assign_vec))  attr(mm, "assign")    <- assign_vec[keep]
+    if (!is.null(contrasts_a)) attr(mm, "contrasts") <- contrasts_a
   } else {
     if (!is.null(assign_vec))  attr(mm, "assign")    <- assign_vec
     if (!is.null(contrasts_a)) attr(mm, "contrasts") <- contrasts_a
   }
-  
-  # check rank
+
+  # Rank check
   qr_decomp <- qr(mm)
   if (qr_decomp$rank < ncol(mm)) {
     warning(sprintf(
@@ -251,18 +227,35 @@ buildModelMatrix <- function(
       qr_decomp$rank, ncol(mm)
     ))
   }
+
   dimnames(mm) <- list(rownames(mm), colnames(mm))
-  return(mm)
+  mm
 }
 
 #' @keywords internal
-getSampleGroups <- function(sample.meta, contrast, sample.id) {
-    if (!is.null(contrast)) {
-        sample.groups <- setNames(as.character(sample.meta[[contrast[1]]]), sample.meta[,grep(sample.id, colnames(sample.meta))])
-        sample.groups <- sample.groups[sample.groups %in% c(contrast[2], contrast[3])]
-        sample.groups <- factor(sample.groups, levels = c(contrast[2], contrast[3]))
+getSampleGroups <- function(sample_meta, contrast, sample.id = NULL) {
+  if (is.null(contrast)) return(NULL)
+  var <- contrast[1]; ref <- contrast[2]; alt <- contrast[3]
+
+  if (!var %in% colnames(sample_meta)) {
+    stop(sprintf("Contrast variable '%s' not found in sample metadata.", var))
+  }
+
+  rn <- rownames(sample_meta)
+  if ((is.null(rn) || anyNA(rn)) && !is.null(sample.id)) {
+    if (!sample.id %in% colnames(sample_meta)) {
+      stop(sprintf("`sample.id` column '%s' not found in sample metadata.", sample.id))
     }
-    return(sample.groups)
+    rn <- as.character(sample_meta[[sample.id]])
+  }
+  if (is.null(rn) || anyNA(rn)) {
+    stop("Sample identifiers are unavailable: set rownames(sample_meta) OR provide a valid `sample.id` column.")
+  }
+
+  vals <- as.character(sample_meta[[var]])
+  names(vals) <- rn
+  vals <- vals[vals %in% c(ref, alt)]
+  factor(vals, levels = c(ref, alt))
 }
 
 # Build a p×K contrast matrix from:
@@ -275,8 +268,9 @@ getSampleGroups <- function(sample.meta, contrast, sample.id) {
 #       "both"     -> "simple" plus, when a partner is 2-level, include the difference-of-simple-effects (the pure interaction)
 #
 # Notes:
-# - Works with treatment coding (the default from model.matrix). If you dropped the intercept, it still works.
+# - Works with treatment coding (the default from model.matrix). If the intercept is dropped, it still works.
 # - Supports factor×factor and continuous×factor interactions. For >2-level partners, it generates simple effects per level.
+#' @keywords internal
 buildContrastMatrix <- function(X, formula, contrasts, expand = c("marginal","simple","both")) {
   stopifnot(is.matrix(X))
   expand <- match.arg(expand)

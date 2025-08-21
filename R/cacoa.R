@@ -55,8 +55,8 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' @field data.object list The main object storing data (Conos or Seurat) (default=list())
     data.object = list(),
 
-    #' @field sample.groups 2-factor vector with annotation of groups/condition per sample (default=NULL)
-    sample.groups = NULL,
+    #' @field sample.metadata Data frame with annotation of covariates per sample (default=NULL)
+    sample.meta = NULL,
 
     #' @field cell.groups Named factor with cell names with cluster per cell (default=NULL)
     cell.groups = NULL,
@@ -67,11 +67,23 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' @field sample.per.cell Named factor with cell names (default=NULL)
     sample.per.cell = NULL,
 
+    #' @field formula Design formula for the analysis (default=NULL)
+    formula = NULL,
+
+    #' @field contrast Character vector c(var, ref, alt) specifying contrasts for the analysis (default=NULL)
+    contrast = NULL,
+
+    #' @field model.matrix Design model matrix for the analysis (default=NULL)
+    model.matrix = NULL,
+
     #' @field ref.level Reference level for sample.group vector (default=NULL)
     ref.level = NULL,
 
     #' @field target.level Target/disease level for sample.group vector
     target.level = NULL,
+
+    #' @field sample.id Character of column name containing sample IDs in sample.metadata
+    sample.id = NULL,
 
     #' @field sample.groups.palette Color palette for the sample.groups (default=NULL)
     sample.groups.palette = NULL,
@@ -89,11 +101,12 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' @description Initialize Cacoa class
     #'
     #' @param data.object Object used to initialize the Cacoa class. Either a raw or normalized count matrix, Conos object, or Seurat object.
-    #' @param sample.groups a two-level factor on the sample names describing the conditions being compared (default: extracted from `data.object`)
+    #' @param sample.metadata data.frame; rows = samples, columns = covariates. Row names must be sample IDs.
+    #' @param design character or formula (e.g. "~ condition + batch"). 
+    #' @param contrast character vector c(var, ref, alt), e.g. c("condition","control","treated"). If not specified, the first term of the design formula will be used e.g. c(<first_term>, <level_1>, <level_n>).
+    #' @param sample.id character scalar naming the column in `sample.metadata` that contains sample IDs.
     #' @param cell.groups vector Indicates cell groups with cell names (default: extracted from `data.object`)
     #' @param sample.per.cell vector Sample name per cell (default: extracted from `data.object`)
-    #' @param ref.level reference sample group level
-    #' @param target.level target sample group level
     #' @param sample.groups.palette Color palette for the sample.groups (default=NULL)
     #' @param cell.groups.palette Color palette for the cell.groups (default=NULL)
     #' @param embedding embedding 2D embedding to visualize the cells in (default: extracted from `data.object`)
@@ -105,21 +118,22 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' @param plot.params list with parameters, replacing defaults from \link[sccore:embeddingPlot]{embeddingPlot} (default=NULL)
     #' @return a new 'Cacoa' object
     #' @examples
-    #' # Is it highly recommended that sample.groups and cell.groups are assigned in the initialization call.
+    #' # Is it highly recommended that sample.metadata and cell.groups are assigned in the initialization call.
     #' # Here, "con" is a Conos object.
     #' \dontrun{
-    #' sample.groups <- c("control","control","disease","disease")
-    #' names(sample.groups) <- names(con$samples)
+    #' sample.metadata <- data.frame(condition=c("control","control","disease","disease"), batch=c("batch1","batch1","batch2","batch2"), sample=names(con$samples))
+    #' sample.id <- "sample"
+    #' design <- "~ condition + batch"
+    #' contrast <- c("condition","control","disease")
     #' }
     #' # cell.groups should be a named factor where names are cell names corresponding to cell names in the data object.
     #' # For Conos objects, they should overlap with rownames(con$embedding)
     #' \dontrun{
     #' cell.groups <- my.named.annotation.factor
-    #' cao <- Cacoa$new(data.object = con, sample.groups = sample.groups, cell.groups =  ref.level = "control", target.level = "disease")
+    #' cao <- Cacoa$new(data.object = con, sample.metadata = sample.metadata, sample.id=sample.id, design = design, contrast = contrast, cell.groups = cell.groups)
     #' }
     initialize=function(
-      data.object, sample.groups=NULL, cell.groups=NULL, sample.per.cell=NULL,
-      ref.level=NULL, target.level=NULL, sample.groups.palette=NULL,
+      data.object, sample.metadata=NULL, sample.id=NULL, design=NULL, contrast=NULL, cell.groups=NULL, sample.per.cell=NULL, sample.groups.palette=NULL,
       cell.groups.palette=NULL, embedding=NULL, n.cores=1, verbose=TRUE,
       graph.name=NULL, assay.name="RNA", data.slot='scale.data',
       plot.theme=ggplot2::theme_bw(), plot.params=NULL
@@ -133,35 +147,47 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
         return(NULL)
       }
 
-      if (!is.null(sample.groups)) {
-        if (length(unique(sample.groups)) != 2) {
-          stop("sample.groups must have exactly two levels")
-        }
-        if (is.null(ref.level) && !is.null(target.level)){
-          ref.level <- setdiff(unique(sample.groups), target.level)[1]
-        }
-        if (!is.null(ref.level) && is.null(target.level)){
-          target.level <- setdiff(unique(sample.groups), ref.level)[1]
-        }
-        if (length(setdiff(sample.groups, c(ref.level, target.level)) > 0)){
-          stop("sample.groups must contain only ref.level '", ref.level, "' and target.level '", target.level, "'")
-        }
-      }
+      if (is.null(sample.metadata)) stop("sample.metadata must be provided")
+      if (!is.data.frame(sample.metadata)) stop("sample.metadata must be a data.frame")
 
-      if (is.null(ref.level) || is.null(target.level)){
-        stop("Both ref.level and target.level must be provided")
-      }
+     
+      samp.names <- rownames(sample.metadata)
+      if ((is.null(samp.names) || anyNA(samp.names)) && !is.null(sample.id)) {
+          if (!sample.id %in% colnames(sample.metadata)) {
+            stop(sprintf("`sample.id` column '%s' not found in sample metadata.", sample.id))
+          }
+          samp.names <- as.character(sample.metadata[[sample.id]])
+          if (any(duplicated(samp.names))) {
+            stop("duplicate sample identifiers found in sample.metadata. Please ensure all sample IDs are unique.")
+          }
+          rownames(sample.metadata) <- samp.names
+        }
+        if (is.null(samp.names) || anyNA(samp.names)) {
+          stop("sample identifiers are unavailable: set rownames(sample.metadata) OR provide a valid `sample.id` column.")
+        }
 
+      if (is.null(design)) stop("Design formula must be provided")
+      vd <- validateDesign(formula = design, sample_meta = sample.metadata, contrast = contrast) 
+      self$formula <- vd$formula
+      self$contrast <- vd$contrast
+
+      self$model.matrix <- buildModelMatrix(sample_meta = sample.metadata, formula = self$formula, contrast = self$contrast, keep.intercept = FALSE)
+
+      self$sample.groups <- getSampleGroups(sample.metadata, self$contrast, sample.id)
+
+      self$sample.meta <- sample.metadata
+      self$sample.id <- sample.id
+      self$ref.level <- self$contrast[2]
+      self$target.level <- self$contrast[3]
       self$n.cores <- n.cores
       self$verbose <- verbose
-      self$ref.level <- ref.level
-      self$target.level <- target.level
 
       if ("Seurat" %in% class(data.object)) {
-        if (is.null(sample.groups) || is.null(sample.per.cell)){
-          stop("Both sample.groups and sample.per.cell must be provided for Seurat objects")
+        if (is.null(sample.metadata) || is.null(sample.per.cell)){
+          stop("Both sample.metadata and sample.per.cell must be provided for Seurat objects")
         }
         data.object$sample.per.cell <- sample.per.cell
+        
         if (is.null(graph.name)){
           warning("No graph.name provided. The algorithm will use the first available graph.")
         }
@@ -184,8 +210,8 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
         }
       } else {
         warning("Many function may be not supported for an object of class ", class(data.object));
-        if (is.null(sample.groups) || is.null(sample.per.cell) || is.null(cell.groups)){
-          stop("All sample.groups, sample.per.cell and cell.groups must be provided")
+        if (is.null(sample.metadata) || is.null(sample.per.cell) || is.null(cell.groups)){
+          stop("All sample.metadata, sample.per.cell and cell.groups must be provided")
         }
       }
 
@@ -207,12 +233,6 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
 
       self$data.object <- data.object
 
-      if(is.null(sample.groups)) {
-        self$sample.groups <- extractSampleGroups(data.object, ref.level, self$target.level)
-      } else {
-        self$sample.groups <- sample.groups <- as.factor(sample.groups)
-      }
-
       if(is.null(cell.groups)) {
         self$cell.groups <- extractCellGroups(data.object)
       } else {
@@ -223,6 +243,9 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
         self$sample.per.cell <- extractSamplePerCell(data.object) %>% as.factor()
       } else {
         self$sample.per.cell <- as.factor(sample.per.cell)
+      }
+      if(length(setdiff(unique(as.character(self$sample.per.cell)), samp.names)) > 0) {
+          stop("sample identifiers found in sample.metadata do not match sample.per.cell")
       }
 
       if(is.null(sample.groups.palette)) {
@@ -1899,6 +1922,7 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' @param beta numeric Smoothing strength parameter of the \link[sccore:heatFilter]{heatFilter} for graph based cell density (default=30)
     #' @param estimate.variation boolean Estimate variation (default=TRUE)
     #' @param sample.groups 2-factor vector with annotation of groups/condition per sample (default=self$sample.groups)
+    #' @param contrast Character vector specifying the contrast variable and terms (default=self$contrast)
     #' @param verbose boolean Print messages (default=self$verbose)
     #' @param n.cores integer Number of cores to use for parallelization (default=self$n.cores)
     #' @param bandwidth numeric KDE bandwidth multiplier (default=0.5). The full bandwidth is estimated by multiplying this value on the difference between 90% and 10%
@@ -1909,10 +1933,13 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' \dontrun{
     #' cao$estimateCellDensity()
     #' }
-    estimateCellDensity = function(bins=400, method='kde', name='cell.density', beta=30, estimate.variation=TRUE,
+    estimateCellDensity = function(bins=400, method='kde', name='cell.density', beta=30, estimate.variation=TRUE, contrast=NULL,
                                    sample.groups=self$sample.groups, verbose=self$verbose, n.cores=self$n.cores,
                                    bandwidth=0.05, ...){
       sample.per.cell <- self$sample.per.cell
+      if(!is.null(contrast)){
+        sample.groups <- getSampleGroups(self$sample.meta, contrast, self$sample.id)
+      }
 
       if (method == 'kde') {
         private$checkCellEmbedding()
@@ -1924,7 +1951,7 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
           estimateCellDensityGraph(sample.per.cell=sample.per.cell, sample.groups=sample.groups,
                                    n.cores=n.cores, beta=beta, verbose=verbose, ...)
       } else stop("Unknown method: ", method)
-
+      
       sg.ids <- sample.groups %>% {split(names(.), .)}
 
       if (estimate.variation) {
@@ -2078,8 +2105,8 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     #' cao$estimateCellDensity()
     #' cao$estimateDiffCellDensity()
     #' }
-    estimateDiffCellDensity=function(type='permutation', adjust.pvalues=NULL, name='cell.density',
-                                     n.permutations=400, smooth=TRUE, verbose=self$verbose, n.cores=self$n.cores, ...){
+    estimateDiffCellDensity=function(type='permutation', adjust.pvalues=NULL, name='cell.density', sample.meta=self$sample.meta, 
+                                     formula=NULL, contrast=NULL, n.permutations=400, smooth=TRUE, verbose=self$verbose, n.cores=self$n.cores, ...){
       dens.res <- private$getResults(name, 'estimateCellDensity')
       if (is.null(adjust.pvalues)) adjust.pvalues <- (type != 'subtract') # NULL can be forwarded here
       density.mat <- dens.res$density.mat
@@ -2097,30 +2124,28 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
         l.max <- NULL
       }
 
-      if (!adjust.pvalues) {
-        if (type %in% c('permutation', 'permutation.mean')) {
-          score <- density.mat %>%
-            diffCellDensityPermutations(sample.groups=self$sample.groups, ref.level=self$ref.level,
-                                        target.level=self$target.level, type=type, verbose=verbose,
-                                        n.permutations=n.permutations, n.cores=n.cores) %>% .$score
-        } else {
-          score <- density.mat %>%
-            diffCellDensity(self$sample.groups, ref.level=self$ref.level, target.level=self$target.level, type=type)
-        }
+      if (!is.null(formula) || !is.null(contrast)) {
+        vd <- validateDesign(formula = formula, sample.meta = sample.meta, contrast = contrast)
+        formula <- vd$formula
+        contrast <- vd$contrast
+        sample.groups <- getSampleGroups(sample.meta, contrast, sample.id=self$sample.id)
+        X <- buildModelMatrix(sample.meta, formula = formula, contrast = contrast, keep.intercept = FALSE)
+      } else {
+        formula <- self$formula
+        contrast <- self$contrast
+        sample.groups <- self$sample.groups
+        X <- self$model.matrix
+      }
+
+      perm.res <- density.mat %>%
+          diffCellDensityPermutations(X, sample.groups = sample.groups, ref.level=contrast[2], target.level = contrast[3], type=type, verbose=verbose,
+                                      n.permutations=n.permutations, n.cores=n.cores, smooth=smooth, graph=graph, l.max = l.max)
+
+      if(!adjust.pvalues){
+        score <- perm.res %>% .$score
         res <- list(raw=score)
       } else {
-        perm.res <- density.mat %>%
-          diffCellDensityPermutations(sample.groups=self$sample.groups, ref.level=self$ref.level,
-                                      target.level=self$target.level, type=type, verbose=verbose,
-                                      n.permutations=n.permutations, n.cores=n.cores)
-
-        res <- list(
-          raw=perm.res$score,
-          adj=perm.res %$% adjustZScoresByPermutations(
-            score, permut.scores, smooth=smooth, graph=graph, n.cores=n.cores, verbose=verbose,
-            l.max=l.max, ...
-          )
-        )
+        res <- list(raw=perm.res$score, adj=perm.res$Z_adj)
       }
 
       self$test.results[[name]]$diff[[type]] <- res

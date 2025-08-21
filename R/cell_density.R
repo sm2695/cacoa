@@ -171,12 +171,11 @@ diffCellDensity <- function(density.mat, sample.groups, ref.level, target.level,
 }
 
 #' @keywords internal
-diffCellDensityPermutations <- function(density.mat, sample.groups, ref.level, target.level, type='permutation',
-                                        verbose=TRUE, n.permutations=200, n.cores=1) {
-  nt <- names(sample.groups[sample.groups == target.level]) # sample name of target
-  nr <- names(sample.groups[sample.groups == ref.level]) # sample name of reference
-
-  if (type %in% c('subtract', 't.test', 'wilcox')) {
+diffCellDensityPermutations <- function(density.mat, X, sample.groups, ref.level, target.level, type='permutation',
+                                        verbose=TRUE, smooth=FALSE, graph=NULL, l.max=NULL, beta=30, n.permutations=200, n.cores=1) {
+  if (type %in% c('subtract', 't.test', 'wilcox')) { # no covariate implementation
+    nt <- names(sample.groups[sample.groups == target.level]) 
+   nr <- names(sample.groups[sample.groups == ref.level]) 
     score <- diffCellDensity(
       density.mat, sample.groups=sample.groups, ref.level=ref.level, target.level=target.level, type=type
     )
@@ -188,28 +187,55 @@ diffCellDensityPermutations <- function(density.mat, sample.groups, ref.level, t
     return(list(score=score, permut.scores=permut.scores))
   }
 
-  if (type == 'permutation') {
-    checkPackageInstalled("matrixStats", details="for `type='permutation'`", cran=TRUE)
-    colRed <- matrixStats::colMedians
-  } else if (type == 'permutation.mean') {
-    colRed <- Matrix::colMeans
-  } else stop("Unknown method: ", type)
+  # linear modelling
+  res.diff <- fit_density_lm(X, t(density.mat), n.permutations)
+    rownames(res.diff$KP) <- colnames(X)
+    rownames(res.diff$KPge) <- colnames(X)
+    dimnames(res.diff$KP_perm)[[1]] <- colnames(X) # coef, bins, permutations
 
-  density.mat <- t(density.mat)
-  dm.shuffled <- density.mat
-  permut.diffs <- plapply(1:n.permutations, function(i) { # Null distribution looks normal, so we don't need a lot of samples
-    rownames(dm.shuffled) %<>% sample()
-    colRed(dm.shuffled[nt,]) - colRed(dm.shuffled[nr,])
-  }, progress=verbose, n.cores=1, fail.on.error=TRUE) %>%  # according to tests, n.cores>1 here does not speed up calculations
-    do.call(cbind, .) %>% set_rownames(colnames(density.mat))
 
-  sds <- apply(permut.diffs, 1, sd)
-  score <- (colRed(density.mat[nt,]) - colRed(density.mat[nr,])) / sds
-  permut.diffs <- apply(permut.diffs, 2, `/`, sds)
-  score[sds < 1e-10] <- 0
-  permut.diffs[sds < 1e-10,] <- 0
+    intercept_idx <- which(rownames(res.diff$KP) == "(Intercept)") # remove intercept from output
+    if (length(intercept_idx) > 0) {
+        res.diff$KP <- res.diff$KP[-intercept_idx, , drop = FALSE]
+        res.diff$KPge <- res.diff$KPge[-intercept_idx, , drop = FALSE]
+        res.diff$KP_perm <- res.diff$KP_perm[-intercept_idx, , , drop = FALSE]
+    }
 
-  return(list(score=score, permut.scores=permut.diffs))
+    colnames(res.diff$KP) <- rownames(density.mat)
+    colnames(res.diff$KPge) <- rownames(density.mat)
+    dimnames(res.diff$KP_perm)[[2]] <- rownames(density.mat)
+
+    coef_names <- rownames(res.diff$KP)
+    res.diff$Z <- qnorm((res.diff$KPge + 1) / (res.diff$n_randomizations + 1))
+
+    n_coefs <- length(coef_names)
+    n_bins <- ncol(res.diff$KP)
+    adjusted_scores <- matrix(NA_real_, nrow = n_coefs, ncol = n_bins,
+                                                        dimnames = list(coef_names, colnames(res.diff$KP)))
+    score_c <- matrix(NA_real_, nrow = n_coefs, ncol = n_bins,
+                                        dimnames = list(coef_names, colnames(res.diff$KP)))
+    for (i in seq_len(n_coefs)) {
+        coef <- coef_names[i]
+        score <- res.diff$KP[coef, ]
+        scores_shuffled <- aperm(res.diff$KP_perm[coef, , , drop = FALSE], c(2, 3, 1))[, , 1, drop = FALSE]
+        scores_shuffled <- matrix(scores_shuffled, nrow = n_bins, ncol = dim(res.diff$KP_perm)[3], byrow = FALSE)
+        rownames(scores_shuffled) <- colnames(res.diff$KP)
+        score_c[i, ] <- score - rowMeans(scores_shuffled, na.rm = TRUE) # corrected scores
+        adjusted_scores[i, ] <- adjustZScoresByPermutations(
+            score = score_c[i, ],
+            scores.shuffled = scores_shuffled,
+            smooth = smooth,
+            graph = graph,
+            n.cores = n.cores,
+            verbose = verbose,
+            l.max = l.max,
+            beta = beta
+        )
+    }
+    res.diff$Z_adj <- adjusted_scores
+    res.diff$score <- score_c
+    return(res.diff)
+
 }
 
 #' @keywords internal
