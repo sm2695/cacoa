@@ -351,3 +351,14 @@ parseDistance <- function(dist, top.n.genes, n.pcs) {
 
   return(dist)
 }
+
+#' @keywords internal
+getTopPCs <- function(cm.norm, n_pcs) {
+  if (!is.matrix(cm.norm)) {
+    cm.norm <- as.matrix(cm.norm)
+  }
+  if (!is.numeric(cm.norm)) {
+    stop("Input matrix must be numeric.")
+  }
+  pca_project(cm.norm, n_pcs)
+}
