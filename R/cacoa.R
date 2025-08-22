@@ -274,83 +274,83 @@ Cacoa <- R6::R6Class("Cacoa", lock_objects=FALSE,
     },
 
 
-#' @description Expression shift magnitudes between conditions
-#' Calculate expression shift magnitudes of different cell clusters between conditions,
-#' using pairwise sample-sample distances within each cell type and a linear-model
-#' framework that can account for covariates via a design formula and contrast.
-#'
-#' @param cell.groups factor/character Named vector of cell-group labels per cell
-#'   (default = `self$cell.groups`).
-#' @param sample.per.cell factor/character Named vector mapping each cell to its sample
-#'   (default = `self$sample.per.cell`).
-#' @param formula formula|character Design formula specifying covariates to model
-#'   (default = `self$formula`).
-#' @param contrast character length-3 Contrast triplet `c(var, ref, target)` indicating the
-#'   grouping variable and the two levels to compare (default = `self$contrast`).
-#' @param sample.meta data.frame Sample-level metadata (rows = samples, columns = covariates)
-#'   used to build the design matrix (default = `self$sample.meta`).
-#' @param sample.id character Optional column in `sample.meta` containing sample IDs;
-#'   used only to derive row names if they are not set (default = `self$sample.id`).
-#' @param dist character Distance metric for expression shifts: `"cor"` (1 − correlation),
-#'   `"l1"` (Manhattan), or `"l2"` (Euclidean). If `NULL`, a sensible default is chosen
-#'   based on dimensionality (default = `NULL`).
-#' @param dist.type character Type of expression distance to test:
-#'   `"shift"` (linear shift; default), `"var"` (variance change), or `"total"` (both).
-#' @param min.cells.per.sample integer Minimum cells per sample to include (default = 10).
-#' @param min.samp.per.type integer Minimum samples per cell type (default = 2).
-#' @param min.gene.frac numeric Minimum fraction of cells per type expressing a gene
-#'   for the gene to be kept (default = 0.01).
-#' @param ref.level character Reference group level (default = `self$ref.level`).
-#' @param target.level character Target group level (default = `self$target.level`).
-#' @param verbose logical Print progress messages (default = `self$verbose`).
-#' @param n.cores integer Number of CPU cores (default = `self$n.cores`).
-#' @param name character Results slot name (default = `"expression.shifts"`).
-#' @param n.permutations integer Number of permutations used to estimate the
-#'   null distribution for coefficients and partial R² (default = 1000).
-#' @param genes character Optional subset of genes to use (default = `NULL`).
-#' @param n.pcs integer Number of principal components for distance computation
-#'   (default = `NULL`, i.e. no PCA).
-#' @param top.n.genes integer Optional number of top genes to use (default = `NULL`).
-#' @param gene.selection character Gene selection method passed to the distance routine
-#'   (e.g., `"wilcox"`; default = `"wilcox"`).
-#' @param return.all.cov logical If `TRUE`, return results for all covariates/terms;
-#'   otherwise return only the primary contrast term (default = `FALSE`).
-#' @param ... Additional parameters forwarded to \code{estimateExpressionChange_lm()}
-#'   and lower-level distance functions.
-#'
-#' @return A list with (per cell type unless noted):
-#' \itemize{
-#'   \item \code{dists.per.type}: vector of observed pairwise distances.
-#'   \item \code{p.dist.info}: normalized distance matrices used in fitting.
-#'   \item \code{sample.groups}: factor of sample groups used in analysis.
-#'   \item \code{coefs.per.type}: centered model coefficients (primary term or all terms).
-#'   \item \code{obs.stat}, \code{exp.stat}: observed and expected (permutation-mean) stats.
-#'   \item \code{pvalues}, \code{padjust}: p-values and BH-adjusted p-values.
-#'   \item \code{perm.stat}: permutation statistics used for inference.
-#'   \item \code{partial.r2.df}: observed partial R² by model term.
-#'   \item \code{partial.r2.perm.mean}, \code{partial.r2.perm.pvalue}: permutation mean
-#'         and p-values for partial R² (by term).
-#'   \item \code{return.all.cov}: whether full-coefficient results were returned.
-#'   \item \code{contrast.var}: the contrast variable name.
-#' }
-#'
-#' @details
-#' For each cell type, the method computes sample-sample expression distances,
-#' optionally normalizes within-group baselines, then fits a linear model on
-#' pairwise distances using a design matrix derived from \code{formula} and
-#' \code{sample.meta}. Significance and effect magnitudes are assessed via label
-#' permutations, and partial R² is reported per model term.
-#'
-#' @examples
-#' \dontrun{
-#' # expression shifts:
-#' cao$estimateExpressionShiftMagnitudes(
-#'   formula   = ~ condition + batch, #optional
-#'   contrast  = c("condition", "control", "treated"), #optional
-#'   dist.type = "shift",
-#'   n.permutations = 1000
-#' )
-#' }
+    #' @description Expression shift magnitudes between conditions
+    #' Calculate expression shift magnitudes of different cell clusters between conditions,
+    #' using pairwise sample-sample distances within each cell type and a linear-model
+    #' framework that can account for covariates via a design formula and contrast.
+    #'
+    #' @param cell.groups factor/character Named vector of cell-group labels per cell
+    #'   (default = `self$cell.groups`).
+    #' @param sample.per.cell factor/character Named vector mapping each cell to its sample
+    #'   (default = `self$sample.per.cell`).
+    #' @param formula formula|character Design formula specifying covariates to model
+    #'   (default = `self$formula`).
+    #' @param contrast character length-3 Contrast triplet `c(var, ref, target)` indicating the
+    #'   grouping variable and the two levels to compare (default = `self$contrast`).
+    #' @param sample.meta data.frame Sample-level metadata (rows = samples, columns = covariates)
+    #'   used to build the design matrix (default = `self$sample.meta`).
+    #' @param sample.id character Optional column in `sample.meta` containing sample IDs;
+    #'   used only to derive row names if they are not set (default = `self$sample.id`).
+    #' @param dist character Distance metric for expression shifts: `"cor"` (1 − correlation),
+    #'   `"l1"` (Manhattan), or `"l2"` (Euclidean). If `NULL`, a sensible default is chosen
+    #'   based on dimensionality (default = `NULL`).
+    #' @param dist.type character Type of expression distance to test:
+    #'   `"shift"` (linear shift; default), `"var"` (variance change), or `"total"` (both).
+    #' @param min.cells.per.sample integer Minimum cells per sample to include (default = 10).
+    #' @param min.samp.per.type integer Minimum samples per cell type (default = 2).
+    #' @param min.gene.frac numeric Minimum fraction of cells per type expressing a gene
+    #'   for the gene to be kept (default = 0.01).
+    #' @param ref.level character Reference group level (default = `self$ref.level`).
+    #' @param target.level character Target group level (default = `self$target.level`).
+    #' @param verbose logical Print progress messages (default = `self$verbose`).
+    #' @param n.cores integer Number of CPU cores (default = `self$n.cores`).
+    #' @param name character Results slot name (default = `"expression.shifts"`).
+    #' @param n.permutations integer Number of permutations used to estimate the
+    #'   null distribution for coefficients and partial R² (default = 1000).
+    #' @param genes character Optional subset of genes to use (default = `NULL`).
+    #' @param n.pcs integer Number of principal components for distance computation
+    #'   (default = `NULL`, i.e. no PCA).
+    #' @param top.n.genes integer Optional number of top genes to use (default = `NULL`).
+    #' @param gene.selection character Gene selection method passed to the distance routine
+    #'   (e.g., `"wilcox"`; default = `"wilcox"`).
+    #' @param return.all.cov logical If `TRUE`, return results for all covariates/terms;
+    #'   otherwise return only the primary contrast term (default = `FALSE`).
+    #' @param ... Additional parameters forwarded to \code{estimateExpressionChange_lm()}
+    #'   and lower-level distance functions.
+    #'
+    #' @return A list with (per cell type unless noted):
+    #' \itemize{
+    #'   \item \code{dists.per.type}: vector of observed pairwise distances.
+    #'   \item \code{p.dist.info}: normalized distance matrices used in fitting.
+    #'   \item \code{sample.groups}: factor of sample groups used in analysis.
+    #'   \item \code{coefs.per.type}: centered model coefficients (primary term or all terms).
+    #'   \item \code{obs.stat}, \code{exp.stat}: observed and expected (permutation-mean) stats.
+    #'   \item \code{pvalues}, \code{padjust}: p-values and BH-adjusted p-values.
+    #'   \item \code{perm.stat}: permutation statistics used for inference.
+    #'   \item \code{partial.r2.df}: observed partial R² by model term.
+    #'   \item \code{partial.r2.perm.mean}, \code{partial.r2.perm.pvalue}: permutation mean
+    #'         and p-values for partial R² (by term).
+    #'   \item \code{return.all.cov}: whether full-coefficient results were returned.
+    #'   \item \code{contrast.var}: the contrast variable name.
+    #' }
+    #'
+    #' @details
+    #' For each cell type, the method computes sample-sample expression distances,
+    #' optionally normalizes within-group baselines, then fits a linear model on
+    #' pairwise distances using a design matrix derived from \code{formula} and
+    #' \code{sample.meta}. Significance and effect magnitudes are assessed via label
+    #' permutations, and partial R² is reported per model term.
+    #'
+    #' @examples
+    #' \dontrun{
+    #' # expression shifts:
+    #' cao$estimateExpressionShiftMagnitudes(
+    #'   formula   = ~ condition + batch, #optional
+    #'   contrast  = c("condition", "control", "treated"), #optional
+    #'   dist.type = "shift",
+    #'   n.permutations = 1000
+    #' )
+    #' }
 estimateExpressionShiftMagnitudes = function(
   cell.groups       = self$cell.groups,
   sample.per.cell   = self$sample.per.cell,
@@ -376,17 +376,16 @@ estimateExpressionShiftMagnitudes = function(
   return.all.cov    = FALSE
   ...
 ) {
-    
-  sample.groups <- getSampleGroups(sample.meta, contrast = contrast, sample.id = sample.id)
 
 if(!is.null(formula) || !is.null(contrast)) {
-    # Validate design
     vd <- validateDesign(formula = formula, sample_meta = sample.meta, contrast = contrast, verbose = verbose)
     formula  <- vd$formula
     contrast <- vd$contrast
+    sample.groups <- getSampleGroups(sample.meta, contrast = contrast, sample.id = sample.id)
   } else {
     formula <- self$formula
     contrast <- self$contrast
+    sample.groups <- self$sample.groups
   }
   ref.level <- contrast[2]
   target.level <- contrast[3]
@@ -424,7 +423,7 @@ if(!is.null(formula) || !is.null(contrast)) {
 
   # LM-based estimation
   self$test.results[[name]] <- shift.inp %$% 
-                                  estimateExpressionChange_lm(cm.per.type, sample.groups = sample.groups, cell.groups = cell.groups, 
+                                  estimateExpressionChange(cm.per.type, sample.groups = sample.groups, cell.groups = cell.groups, 
                                                               sample.meta = sample.meta, sample.per.cell = sample.per.cell, sample.id = sample.id, 
                                                               formula = formula, contrast = contrast, dist = dist %||% "cor", dist.type = dist.type, 
                                                               ref.level = ref.level, target.level = target.level, gene.selection = gene.selection, 
